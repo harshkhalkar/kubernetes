@@ -1,6 +1,6 @@
 # Cluster Setup Scripts
 
-This repository contains shell scripts for setting up a basic clustered environment. The scripts are designed to be used in a Linux-based environment to configure common settings and initialize a master node.
+This directory contains shell scripts for setting up a basic clustered environment. The scripts are designed to be used in a Linux-based environment to configure common settings and initialize a master node.
 
 ## Contents
 
