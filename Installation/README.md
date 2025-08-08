@@ -16,6 +16,10 @@ This repository contains shell scripts for setting up a basic clustered environm
 
 > Ensure system meets these minimum requirements to avoid installation and performance issues.
 
+## Optional: Set Hostname
+
+To help distinguish nodes in the cluster, you may set a hostname for the master node: **sudo hostnamectl set-hostname master**
+
 ## Usage
 
 Make the scripts executable and run them in the required order:
