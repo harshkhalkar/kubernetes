@@ -29,3 +29,8 @@ chmod +x setup-common.sh setup-master.sh
 ./setup-common.sh
 ./setup-master.sh
 ```
+## Verification
+
+After running the setup scripts, verify the cluster status using `kubectl`:  `kubectl get nodes` (Lists all nodes in the cluster and their status)
+
+
