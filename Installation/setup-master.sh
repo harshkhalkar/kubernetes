@@ -4,7 +4,7 @@
 
 # 1. Initialize the Cluster
 echo "Initializing Kubernetes Cluster..."
-sudo kubeadm init
+sudo kubeadm init --pod-network-cidr=192.168.0.0/16
 sleep 2
 
 # 2. Set Up Local kubeconfig
