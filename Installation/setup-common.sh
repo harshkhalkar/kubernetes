@@ -1,85 +1,142 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Execute on Both "Master" & "Worker" Nodes:
+set -euo pipefail
 
-# 1. Disable Swap: Required for Kubernetes to function correctly.
-echo "Disabling swap..."
-sudo swapoff -a
-sleep 2
+#######################################
+# CONFIGURATION (EDIT THIS)
+#######################################
+K8S_VERSION="${K8S_VERSION:-v1.34}"
+PAUSE_IMAGE="${PAUSE_IMAGE:-registry.k8s.io/pause:3.10}"
+HOLD_PACKAGES="${HOLD_PACKAGES:-false}"
 
-# 2. Load Necessary Kernel Modules: Required for Kubernetes networking.
-echo "Loading necessary kernel modules for Kubernetes networking..."
-cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+#######################################
+# LOGGING
+#######################################
+log() {
+  echo -e "\n[INFO] $1"
+}
+
+error() {
+  echo -e "\n[ERROR] $1" >&2
+  exit 1
+}
+
+#######################################
+# PRECHECKS
+#######################################
+if [[ "$EUID" -ne 0 ]]; then
+  error "Please run as root or use sudo"
+fi
+
+command -v apt-get >/dev/null || error "This script supports Debian/Ubuntu only"
+
+#######################################
+# 1. DISABLE SWAP
+#######################################
+log "Disabling swap..."
+
+swapoff -a || true
+sed -i '/ swap / s/^/#/' /etc/fstab || true
+
+#######################################
+# 2. KERNEL MODULES
+#######################################
+log "Configuring kernel modules..."
+
+cat <<EOF >/etc/modules-load.d/k8s.conf
 overlay
 br_netfilter
 EOF
 
-sudo modprobe overlay
-sudo modprobe br_netfilter
-sleep 2
+modprobe overlay || true
+modprobe br_netfilter || true
 
-# 3. Set Sysctl Parameters: Helps with networking.
-echo "Setting sysctl parameters for networking..."
-cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+#######################################
+# 3. SYSCTL SETTINGS
+#######################################
+log "Applying sysctl settings..."
+
+cat <<EOF >/etc/sysctl.d/k8s.conf
 net.bridge.bridge-nf-call-iptables  = 1
 net.bridge.bridge-nf-call-ip6tables = 1
 net.ipv4.ip_forward                 = 1
 EOF
 
-sudo sysctl --system
-lsmod | grep br_netfilter
-lsmod | grep overlay
-sleep 2
+sysctl --system
 
-# 4. Install Containerd:
-echo "Installing containerd..."
-sudo apt-get update
-sleep 2
+#######################################
+# 4. INSTALL CONTAINERD
+#######################################
+log "Installing containerd..."
 
-sudo apt-get install -y ca-certificates curl
-sleep 2
+apt-get update -y
+apt-get install -y ca-certificates curl gnupg
 
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-sudo chmod a+r /etc/apt/keyrings/docker.asc
-sleep 2
+install -m 0755 -d /etc/apt/keyrings
 
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+fi
 
-sudo apt-get update
-sleep 2
+chmod a+r /etc/apt/keyrings/docker.gpg
 
-sudo apt-get install -y containerd.io
-sleep 2
+ARCH=$(dpkg --print-architecture)
+CODENAME=$(source /etc/os-release && echo "$VERSION_CODENAME")
 
-containerd config default | sed -e 's/SystemdCgroup = false/SystemdCgroup = true/' -e 's/sandbox_image = "registry.k8s.io\/pause:3.6"/sandbox_image = "registry.k8s.io\/pause:3.9"/' | sudo tee /etc/containerd/config.toml
+echo "deb [arch=$ARCH signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/ubuntu $CODENAME stable" \
+> /etc/apt/sources.list.d/docker.list
 
-sudo systemctl restart containerd
-sleep 2
+apt-get update -y
+apt-get install -y containerd.io
 
-sudo systemctl is-active containerd
-sleep 2
+#######################################
+# CONTAINERD CONFIG
+#######################################
+log "Configuring containerd..."
 
-# 5. Install Kubernetes Components:
-echo "Installing Kubernetes components (kubelet, kubeadm, kubectl)..."
-sudo apt-get update
-sleep 2
+mkdir -p /etc/containerd
 
-sudo apt-get install -y apt-transport-https ca-certificates curl gpg
-sleep 2
+containerd config default | \
+sed -e 's/SystemdCgroup = false/SystemdCgroup = true/' \
+    -e "s|sandbox_image = .*|sandbox_image = \"$PAUSE_IMAGE\"|" \
+> /etc/containerd/config.toml
 
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-sleep 2
+systemctl enable containerd
+systemctl restart containerd
 
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+#######################################
+# 5. INSTALL KUBERNETES
+#######################################
+log "Installing Kubernetes components ($K8S_VERSION)..."
 
-sudo apt-get update
-sleep 2
+if [[ ! -f /etc/apt/keyrings/kubernetes.gpg ]]; then
+  curl -fsSL https://pkgs.k8s.io/core:/stable:/${K8S_VERSION}/deb/Release.key \
+    | gpg --dearmor -o /etc/apt/keyrings/kubernetes.gpg
+fi
 
-sudo apt-get install -y kubelet kubeadm kubectl
-sleep 2
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes.gpg] \
+https://pkgs.k8s.io/core:/stable:/${K8S_VERSION}/deb/ /" \
+> /etc/apt/sources.list.d/kubernetes.list
 
-sudo apt-mark hold kubelet kubeadm kubectl
-sleep 2
+apt-get update -y
+apt-get install -y kubelet kubeadm kubectl
 
-echo "Kubernetes setup completed."
+#######################################
+# OPTIONAL: HOLD PACKAGES
+#######################################
+if [[ "$HOLD_PACKAGES" == "true" ]]; then
+  log "Holding Kubernetes packages..."
+  apt-mark hold kubelet kubeadm kubectl
+fi
+
+#######################################
+# FINAL STATUS
+#######################################
+log "Validating services..."
+
+systemctl is-active containerd || error "containerd not running"
+systemctl enable kubelet
+
+log "| Kubernetes node setup complete!"
